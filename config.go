@@ -2,7 +2,10 @@ package main
 
 import (
 	"io"
+	"log"
 	"os"
+	"os/user"
+	"path"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,4 +33,21 @@ func parseProfile(filepath string) (*Profile, error) {
 	}
 
 	return prf, nil
+}
+
+func getProfile(profName string) (*Profile, error) {
+	usr, err := user.Current()
+	if err != nil {
+		log.Printf("error: user.Current(). %s", err)
+		os.Exit(1)
+	}
+
+	var profile = &Profile{}
+	profPath := path.Join(usr.HomeDir, ".config", "discord-quickpost", profName+".yaml")
+	profile, err = parseProfile(profPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return profile, nil
 }

@@ -2,12 +2,10 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
-	"os/user"
-	"path"
 	"runtime/debug"
 
+	"github.com/bwmarrin/discordgo"
 	flag "github.com/spf13/pflag"
 )
 
@@ -26,64 +24,32 @@ type CliOutput struct {
 }
 
 type Options struct {
+	session  *discordgo.Session
 	token    string
-	text     string
-	filepath string
 	postOpts *PostOptions
-
-	// mode        string
-	// blocks   string
-	// snippetMode bool
-	// slackClient SlackClient
 }
 
 type PostOptions struct {
-	username string
-	channel  string
-	// iconEmoji string
-	// iconUrl   string
-	// threadTs  string
-}
-
-func strGetFirstOne(vars ...string) string {
-	for _, v := range vars {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	channel   string
+	text      string
+	filePaths []string
 }
 
 func main() {
 	var (
-		// mode: print version
-		printVersion = flag.Bool("version", false, "print version")
+		optText = flag.String("text", "", "post text")
+		optFile = flag.String("file", "", "post file path")
 
-		// mode: post text
-		optText     = flag.String("text", "", "post text")
-		optTextFile = flag.String("textfile", "", "post text file path")
-		// snippetMode = flag.Bool("snippet", false, "post text as snippet")
+		envToken = os.Getenv("DISCORD_TOKEN")
+		optToken = flag.String("token", "", "discord app token")
 
-		// mode: post file
-		filepath = flag.String("file", "", "post file path")
-
-		// mode: post blocks json
-		// optBlocks = flag.String("blocks", "", "post BlockKit json")
-
-		// must options
-		envToken   = os.Getenv("SLACK_TOKEN")
-		optToken   = flag.String("token", "", "slack app OAuth token")
 		optChannel = flag.String("channel", "", "post slack channel id")
 
-		// optional
-		envProfile = os.Getenv("SLACK_QUICKPOST_PROFILE")
-		optProfile = flag.String("profile", "", "slack quickpost profile name")
-		// threadTs   = flag.String("thread-ts", "", "post under thread")
-		// iconEmoji  = flag.String("icon", "", "icon emoji")
-		// iconUrl    = flag.String("icon-url", "", "icon image url")
-		username = flag.String("username", "", "user name")
+		// envProfile = os.Getenv("DISCORD_QUICKPOST_PROFILE")
+		// optProfile = flag.String("profile", "", "discord quickpost profile name")
 
-		noFail = flag.Bool("nofail", false, "always return success code(0)")
+		noFail       = flag.Bool("nofail", false, "always return success code(0)")
+		printVersion = flag.Bool("version", false, "print version")
 
 		errText []string
 	)
@@ -95,43 +61,47 @@ func main() {
 	}
 
 	opts := &Options{
-		// snippetMode: *snippetMode,
-		filepath: *filepath,
-		postOpts: &PostOptions{
-			username: *username,
-			// iconEmoji: *iconEmoji,
-			// iconUrl:   *iconUrl,
-			// threadTs:  *threadTs,
-		},
-	}
-	_ = optText
-	_ = optTextFile
-	usr, err := user.Current()
-	if err != nil {
-		log.Printf("error: user.Current(). %s", err)
-		os.Exit(1)
+		postOpts: &PostOptions{},
 	}
 
-	profileName := strGetFirstOne(*optProfile, envProfile)
+	opts.postOpts.text = *optText
 
-	var profile = &Profile{}
-	if profileName != "" {
-		profPath := path.Join(usr.HomeDir, ".config", "discord-quickpost", profileName+".yaml")
-		profile, err = parseProfile(profPath)
-		if err != nil {
-			errText = append(errText, fmt.Sprintf("error: failed read profile %s. %s", profPath, err.Error()))
-		}
-	}
+	// var profile = &profile{}
+	// profileName := strGetFirstOne(*optProfile, envProfile)
+	// if profileName != "" {
+	// 	var err error
+	// 	profile, err = getProfile(profileName)
+	// 	if err != nil {
+	// 		errText = append(errText, fmt.Sprintf("error: failed read profile %s. %s", profPath, err.Error()))
+	// 	}
+	// }
 
-	opts.token = strGetFirstOne(*optToken, envToken, profile.Token)
+	// opts.token = strGetFirstOne(*optToken, envToken, profile.Token)
+	opts.token = strGetFirstOne(*optToken, envToken)
 	if opts.token == "" {
 		errText = append(errText, "error: slack token is required")
 	}
 
-	opts.postOpts.channel = strGetFirstOne(*optChannel, profile.Channel)
+	// opts.postOpts.channel = strGetFirstOne(*optChannel, profile.Channel)
+	opts.postOpts.channel = strGetFirstOne(*optChannel)
 	if opts.postOpts.channel == "" {
 		errText = append(errText, "error: channel is required")
 	}
+
+	if *optFile != "" {
+		opts.postOpts.filePaths = []string{*optFile}
+	}
+
+	// Discord initialize
+	session, err := discordgo.New("Bot " + opts.token)
+	if err != nil {
+		fmt.Println(err.Error())
+		if *noFail {
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	opts.session = session
 
 	if _, err := Do(opts); err != nil {
 		fmt.Println(err.Error())
@@ -146,6 +116,35 @@ func main() {
 
 func Do(opts *Options) (*CliOutput, error) {
 	var output *CliOutput
-	log.Println("Do")
+	var sendParameter = &discordgo.MessageSend{}
+	if opts.postOpts.text != "" {
+		sendParameter.Content = opts.postOpts.text
+	}
+
+	// TODO: 2つ以上に対応する
+	var f *os.File
+	if len(opts.postOpts.filePaths) > 0 {
+		var err error
+		if f, err = os.Open(opts.postOpts.filePaths[0]); err != nil {
+			return nil, err
+		}
+		defer f.Close()
+
+		file := &discordgo.File{
+			Name:        f.Name(),
+			ContentType: "text/plain",
+			Reader:      f,
+		}
+
+		sendParameter.Files = []*discordgo.File{file}
+	}
+
+	if _, err := opts.session.ChannelMessageSendComplex(
+		opts.postOpts.channel,
+		sendParameter,
+	); err != nil {
+		return nil, err
+	}
+
 	return output, nil
 }
